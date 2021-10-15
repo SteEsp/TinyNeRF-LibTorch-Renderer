@@ -1,14 +1,18 @@
-cmake_minimum_required(VERSION 3.0 FATAL_ERROR)
-project(import_trained_model)
+cmake_minimum_required ( VERSION 3.0 )
+project ( renderer ) 
 
-# set(CMAKE_PREFIX_PATH C:/Dev/libtorch)
+find_package ( glm CONFIG REQUIRED ) # glm
 
-find_package(Torch REQUIRED)
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS}")
+find_package( Torch REQUIRED )
+set ( CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS}" )
 
-add_executable(${PROJECT_NAME} main.cpp)
-target_link_libraries(${PROJECT_NAME} "${TORCH_LIBRARIES}")
-set_property(TARGET ${PROJECT_NAME} PROPERTY CXX_STANDARD 14)
+add_executable ( ${PROJECT_NAME} main.cpp )
+target_link_libraries ( 
+  ${PROJECT_NAME} 
+  "${TORCH_LIBRARIES}"
+  glm::glm
+)
+set_property ( TARGET ${PROJECT_NAME} PROPERTY CXX_STANDARD 14 )
 
 # The following code block is suggested to be used on Windows.
 # According to https://github.com/pytorch/pytorch/issues/25457,
@@ -19,5 +23,5 @@ if (MSVC)
                      POST_BUILD
                      COMMAND ${CMAKE_COMMAND} -E copy_if_different
                      ${TORCH_DLLS}
-                     $<TARGET_FILE_DIR:import_trained_model>)
+                     $<TARGET_FILE_DIR:renderer>)
 endif (MSVC)
