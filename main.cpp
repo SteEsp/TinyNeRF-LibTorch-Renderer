@@ -219,8 +219,25 @@ std::vector<torch::Tensor> render_volume_density(
 }
 
 
-std::vector<torch::Tensor> positional_encoding(torch::Tensor tensor, int num_encoding_functions=6,
+/**
+ * Apply positional encoding to the input.
+
+  Args:
+    tensor (torch.Tensor): Input tensor to be positionally encoded.
+    num_encoding_functions (optional, int): Number of encoding functions used to
+        compute a positional encoding (default: 6).
+    include_input (optional, bool): Whether or not to include the input in the
+        computed positional encoding (default: True).
+    log_sampling (optional, bool): Sample logarithmically in frequency space, as
+        opposed to linearly (default: True).
+  
+  Returns:
+    (torch.Tensor): Positional encoding of the input tensor.
+*/
+torch::Tensor positional_encoding(torch::Tensor tensor, int num_encoding_functions=6,
   bool include_input=true, bool log_sampling=true) {
+
+    // TODO: test
 
     std::vector<torch::Tensor> encoding;
 
@@ -230,16 +247,16 @@ std::vector<torch::Tensor> positional_encoding(torch::Tensor tensor, int num_enc
 
     // Now, encode the input using a set of high-frequency functions and append the
     // resulting values to the encoding.
-  
+    at::Tensor frequency_bands;
     if (log_sampling) {
-        auto frequency_bands = pow(2.0, torch::linspace(
+        frequency_bands = pow(2.0, torch::linspace(
               0.0,
               num_encoding_functions - 1,
               num_encoding_functions,
               torch::TensorOptions().dtype(tensor.dtype()).device(tensor.device())
         ));
     } else {
-        auto frequency_bands = torch::linspace(
+        frequency_bands = torch::linspace(
           pow(2.0, 0.0),
           pow(2.0, (num_encoding_functions - 1)),
           num_encoding_functions,
@@ -247,20 +264,18 @@ std::vector<torch::Tensor> positional_encoding(torch::Tensor tensor, int num_enc
         );
     }
 
-    // TODO: continue the function 
-    /*
-    for freq in frequency_bands:
-      for func in [torch.sin, torch.cos]:
-          encoding.append(func(tensor * freq))
+    // Iterate over each frequency band
+    float* freq_ptr = (float*) frequency_bands.data_ptr(); 
+    for (int freq = 0; freq < frequency_bands.sizes()[0]; ++freq) {
+        encoding.push_back(torch::sin(tensor * *freq_ptr++));
+        encoding.push_back(torch::cos(tensor * *freq_ptr++));
+    }
 
     // Special case, for no positional encoding
-    if len(encoding) == 1:
-        return encoding[0]
-    else:
-        return torch.cat(encoding, dim=-1)
-    */
-
-    return encoding;
+    if (encoding.size() == 1) 
+        return encoding[0];
+    else
+        return at::cat(encoding, -1); // dim=-1
 
 }
 
@@ -270,11 +285,15 @@ std::vector<torch::Tensor> positional_encoding(torch::Tensor tensor, int num_enc
   Each element of the list (except possibly the last) has dimension `0` of length
   `chunksize`.
 */
-std::vector<torch::Tensor> get_minibatches(torch::Tensor inputs, int chunksiz=1024*8) {
+std::vector<torch::Tensor> get_minibatches(torch::Tensor inputs, int chunksize=1024*8) {
     
     std::vector<torch::Tensor> minibatches;
 
-    // TODO: get_minibatches
+    // TODO: test 
+    for (int i = 0; i < inputs.sizes()[0]; i+=chunksize) {
+        auto batch = inputs.index({Slice(i, None, i + chunksize)}); // [i:i + chunksize]
+        minibatches.push_back(batch);
+    }
 
     return minibatches;
 
@@ -283,11 +302,18 @@ std::vector<torch::Tensor> get_minibatches(torch::Tensor inputs, int chunksiz=10
 
 // TODO: change mat4 tform_cam2world to camera cam
 void render(const int height, const int width, const float focal_length, 
-            const mat4 tform_cam2world, const float near_thresh, 
+            const torch::Tensor tform_cam2world, const float near_thresh, 
             const float far_thresh, const int depth_samples_per_ray
             ) {
 
-    // TODO: define encoding_function, get_minibatches_function
+    // TODO: test
+
+    // Run one iteration of TinyNeRF and get the rendered RGB image.
+    //auto rgb_predicted = run_one_iter_of_tinynerf(height, width, focal_length,
+    //                                        tform_cam2world, near_thresh,
+    //                                        far_thresh, depth_samples_per_ray,
+    //                                        encode, get_minibatches)
+
     return;
 
 }
@@ -303,8 +329,32 @@ int main(int argc,  char* argv[]) {
     torch::jit::script::Module module;
 
     load_module_to_gpu(module, string(argv[1]));
-
     
+    auto tform_cam2world = torch::tensor({
+        { 6.8935e-01,  5.3373e-01, -4.8982e-01, -1.9745e+00},
+        {-7.2443e-01,  5.0789e-01, -4.6611e-01, -1.8789e+00},
+        { 1.4901e-08,  6.7615e-01,  7.3676e-01,  2.9700e+00},
+        { 0.0000e+00,  0.0000e+00,  0.0000e+00,  1.0000e+00}}).to(torch::kCUDA);
+
+    // std::cout << tform_cam2world;
+
+    /* 
+    mat4 mat4_cam2world(
+        6.8935e-01,  5.3373e-01, -4.8982e-01, -1.9745e+00,
+        -7.2443e-01,  5.0789e-01, -4.6611e-01, -1.8789e+00,
+        1.4901e-08,  6.7615e-01,  7.3676e-01,  2.9700e+00,
+        0.0,  0.00,  0.0,  1.0
+    );
+
+    auto target_tform_cam2world = torch::zeros({4, 4});
+    for (int i = 0; i < 4; i++)
+        for (int j = 0; j < 4; j++)
+            target_tform_cam2world.index_put_({i, j}, mat4_cam2world[i][j]);
+    target_tform_cam2world.to(torch::kCUDA);
+
+    std::cout << target_tform_cam2world;    
+    */
+
     // Image height and width
     int image_width = 100;
     int image_height = 100;
@@ -313,6 +363,13 @@ int main(int argc,  char* argv[]) {
     float near_thresh = 2.;
     float far_thresh = 6.;
 
+    // Focal lenght
+    float focal_length = 0.0;
+
+    int depth_samples_per_ray = 6;
+
+    render( image_height, image_width, focal_length, tform_cam2world, 
+            near_thresh, far_thresh, depth_samples_per_ray);
     /*
     // Create a vector of inputs.
     std::vector<torch::jit::IValue> inputs;
