@@ -15,6 +15,8 @@
 #include <glm/ext/scalar_constants.hpp> // pi
 */
 
+#include <opencv2/opencv.hpp>
+
 #include <iostream>
 #include <memory>
 #include <string>
@@ -251,7 +253,7 @@ torch::Tensor positional_encoding(torch::Tensor tensor, int num_encoding_functio
 
     // Now, encode the input using a set of high-frequency functions and append the
     // resulting values to the encoding.
-    at::Tensor frequency_bands;
+    torch::Tensor frequency_bands;
     if (log_sampling) {
         frequency_bands = pow(2.0, torch::linspace(
               0.0,
@@ -289,9 +291,9 @@ torch::Tensor positional_encoding(torch::Tensor tensor, int num_encoding_functio
   Each element of the list (except possibly the last) has dimension `0` of length
   `chunksize`.
 */
-std::vector<torch::Tensor> get_minibatches(torch::Tensor inputs, int chunksize=1024*8) {
+std::vector<torch::jit::IValue> get_minibatches(torch::Tensor inputs, int chunksize=1024*8) {
     
-    std::vector<torch::Tensor> minibatches;
+    std::vector<torch::jit::IValue> minibatches;
 
     // TODO: test 
     for (int i = 0; i < inputs.sizes()[0]; i+=chunksize) {
@@ -304,7 +306,9 @@ std::vector<torch::Tensor> get_minibatches(torch::Tensor inputs, int chunksize=1
 } 
 
 
-// TODO: change mat4 tform_cam2world to camera cam
+/**
+ * One iteration of TinyNeRF (forward pass) 
+*/
 torch::Tensor render(const torch::jit::script::Module model, const int height, const int width, const float focal_length, 
             const torch::Tensor tform_cam2world, const float near_thresh, 
             const float far_thresh, const int depth_samples_per_ray,
@@ -312,6 +316,7 @@ torch::Tensor render(const torch::jit::script::Module model, const int height, c
             ) {
 
     // TODO: test
+
     std::vector<torch::Tensor> res;
 
     // Get the "bundle" of rays through all image pixels.
@@ -337,22 +342,21 @@ torch::Tensor render(const torch::jit::script::Module model, const int height, c
     auto batches = get_minibatches(encoded_points, chunksize);
 
     std::vector<torch::Tensor> predictions;
-    for(auto & raw_batch: batches) {
-        // `model.forward` returns an IValue     
-        // which we convert back to a Tensor
-        auto output = model
-                        .forward(batch)
-                        .toTensor();
-        predictions.append(prediction);
+    for(auto &batch: batches) {
+        // model.forward returns an IValue which we convert back to a Tensor
+        auto output = model.forward(batch).toTensor();
+        predictions.push_back(output);
     }
     auto radiance_field_flattened = at::cat(predictions, 0); // dim=0
 
     // "Unflatten" to obtain the radiance field.
-    // unflattened_shape = list(query_points.shape[:-1]) + [4]
-    // TODO: radiance_field = torch.reshape(radiance_field_flattened, unflattened_shape)
+    auto radiance_field = torch::reshape(radiance_field_flattened, (query_points.sizes()[0], query_points.sizes()[1], 4));
 
     // Perform differentiable volume rendering to re-synthesize the RGB image.
-    return render_volume_density(radiance_field, ray_origins, depth_values)[0];
+    res = render_volume_density(radiance_field, ray_origins, depth_values);
+    auto rgb_predicted = res[0];
+
+    return rgb_predicted;
 
 }
 
@@ -422,7 +426,7 @@ int main(int argc,  char* argv[]) {
     // only after all rays from the current "bundle" are queried and rendered).
     int chunksize = 16384; // Use chunksize of about 4096 to fit in ~1.4 GB of GPU memory.
 
-    render(image_height, image_width, focal_length, tform_cam2world, 
+    render(model, image_height, image_width, focal_length, tform_cam2world, 
            near_thresh, far_thresh, depth_samples_per_ray,
            num_encoding_functions, chunksize);
     /*
@@ -431,7 +435,7 @@ int main(int argc,  char* argv[]) {
     inputs.push_back(torch::ones({1, 90}).to(torch::kCUDA));
     std::cout << "Created input tensor and moved to GPU!\n";
 
-    at::Tensor output;
+    torch::Tensor output;
     try {
         // Execute the model and turn its output into a tensor.
         output = model.forward(inputs).toTensor();
