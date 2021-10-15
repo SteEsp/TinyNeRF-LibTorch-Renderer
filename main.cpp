@@ -1,8 +1,11 @@
-// From: https://pytorch.org/tutorials/advanced/cpp_export.html
+// Pytorch C++ conversion of https://github.com/krrish94/nerf-pytorch renderer
+// Many thanks to: https://g-airborne.com/bringing-your-deep-learning-model-to-production-with-libtorch-part-2-tracing-your-pytorch-model/
+
 // Run with: .\build\RelWithDebInfo\renderer.exe traced_models/traced_tiny_nerf.pt
 
 #include <torch/script.h> // One-stop header.
 
+/*
 #include <glm/vec3.hpp> // vec3
 #include <glm/vec4.hpp> // vec4
 #include <glm/mat3x3.hpp> // mat3
@@ -10,6 +13,7 @@
 #include <glm/ext/matrix_transform.hpp> // translate, rotate, scale
 #include <glm/ext/matrix_clip_space.hpp> // perspective
 #include <glm/ext/scalar_constants.hpp> // pi
+*/
 
 #include <iostream>
 #include <memory>
@@ -20,12 +24,12 @@ using namespace glm;
 using namespace torch::indexing;
 // namespace F = torch::nn::functional;
 
-bool load_module_to_gpu(torch::jit::script::Module &module, string path) {
+bool load_module_to_gpu(torch::jit::script::Module &model, string path) {
 
   try {
     // Deserialize the ScriptModule from a file using torch::jit::load().
-    module = torch::jit::load(path);
-    module.to(torch::kCUDA);
+    model = torch::jit::load(path);
+    model.to(torch::kCUDA);
   }
   catch ( c10::Error& e) {
     return false;
@@ -106,7 +110,7 @@ torch::Tensor cumprod_exclusive(torch::Tensor tensor) {
 */
 std::vector<torch::Tensor> get_ray_bundle(
     int height, int width, float focal_length, 
-    mat4 tform_cam2world
+    torch::Tensor tform_cam2world
 ) {
 
     torch::Tensor ray_origins;
@@ -301,20 +305,54 @@ std::vector<torch::Tensor> get_minibatches(torch::Tensor inputs, int chunksize=1
 
 
 // TODO: change mat4 tform_cam2world to camera cam
-void render(const int height, const int width, const float focal_length, 
+torch::Tensor render(const torch::jit::script::Module model, const int height, const int width, const float focal_length, 
             const torch::Tensor tform_cam2world, const float near_thresh, 
-            const float far_thresh, const int depth_samples_per_ray
+            const float far_thresh, const int depth_samples_per_ray,
+            const int num_encoding_functions, const int chunksize
             ) {
 
     // TODO: test
+    std::vector<torch::Tensor> res;
 
-    // Run one iteration of TinyNeRF and get the rendered RGB image.
-    //auto rgb_predicted = run_one_iter_of_tinynerf(height, width, focal_length,
-    //                                        tform_cam2world, near_thresh,
-    //                                        far_thresh, depth_samples_per_ray,
-    //                                        encode, get_minibatches)
+    // Get the "bundle" of rays through all image pixels.
+    res = get_ray_bundle(height, width, focal_length, tform_cam2world);
+    auto ray_origins = res[0];
+    auto ray_directions = res[1];
+    
+    // Sample query points along each ray
+    res = compute_query_points_from_rays(
+        ray_origins, ray_directions, near_thresh, far_thresh, depth_samples_per_ray
+    );
+    auto query_points = res[0];
+    auto depth_values = res[1]; 
 
-    return;
+    // "Flatten" the query points.
+    auto flattened_query_points = query_points.reshape({-1, 3});
+
+    // Encode the query points (default: positional encoding).
+    auto encoded_points = positional_encoding(flattened_query_points, num_encoding_functions);
+
+    // Split the encoded points into "chunks", run the model on all chunks, and
+    //  concatenate the results (to avoid out-of-memory issues).
+    auto batches = get_minibatches(encoded_points, chunksize);
+
+    std::vector<torch::Tensor> predictions;
+    for(auto & raw_batch: batches) {
+        // `model.forward` returns an IValue     
+        // which we convert back to a Tensor
+        auto output = model
+                        .forward(batch)
+                        .toTensor();
+        predictions.append(prediction);
+    }
+    auto radiance_field_flattened = at::cat(predictions, 0); // dim=0
+
+    // "Unflatten" to obtain the radiance field.
+    // unflattened_shape = list(query_points.shape[:-1]) + [4]
+    // TODO: radiance_field = torch.reshape(radiance_field_flattened, unflattened_shape)
+
+    // Perform differentiable volume rendering to re-synthesize the RGB image.
+    return render_volume_density(radiance_field, ray_origins, depth_values)[0];
 
 }
 
@@ -326,9 +364,14 @@ int main(int argc,  char* argv[]) {
         return -1;
     }
 
-    torch::jit::script::Module module;
+    torch::jit::script::Module model;
 
-    load_module_to_gpu(module, string(argv[1]));
+    load_module_to_gpu(model, string(argv[1]));
+
+    // Set to `eval` model (just like Python)
+    model.eval();     
+    // Within this scope/thread, don't use gradients (again, like in Python)     
+    torch::NoGradGuard no_grad_;
     
     auto tform_cam2world = torch::tensor({
         { 6.8935e-01,  5.3373e-01, -4.8982e-01, -1.9745e+00},
@@ -355,6 +398,8 @@ int main(int argc,  char* argv[]) {
     std::cout << target_tform_cam2world;    
     */
 
+    /* Parameters */
+
     // Image height and width
     int image_width = 100;
     int image_height = 100;
@@ -367,9 +412,19 @@ int main(int argc,  char* argv[]) {
     float focal_length = 0.0;
 
     int depth_samples_per_ray = 6;
+    
+    // Number of functions used in the positional encoding (Be sure to update the 
+    // model if this number changes).
+    int num_encoding_functions = 6;
 
-    render( image_height, image_width, focal_length, tform_cam2world, 
-            near_thresh, far_thresh, depth_samples_per_ray);
+    // Chunksize (Note: this isn't batchsize in the conventional sense. This only
+    // specifies the number of rays to be queried in one go. Backprop still happens
+    // only after all rays from the current "bundle" are queried and rendered).
+    int chunksize = 16384; // Use chunksize of about 4096 to fit in ~1.4 GB of GPU memory.
+
+    render(image_height, image_width, focal_length, tform_cam2world, 
+           near_thresh, far_thresh, depth_samples_per_ray,
+           num_encoding_functions, chunksize);
     /*
     // Create a vector of inputs.
     std::vector<torch::jit::IValue> inputs;
@@ -379,7 +434,7 @@ int main(int argc,  char* argv[]) {
     at::Tensor output;
     try {
         // Execute the model and turn its output into a tensor.
-        output = module.forward(inputs).toTensor();
+        output = model.forward(inputs).toTensor();
     }
     catch ( c10::Error& e) {
         std::cout << "error querying the model\n";
