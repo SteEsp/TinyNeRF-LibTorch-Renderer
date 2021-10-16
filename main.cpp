@@ -22,7 +22,8 @@
 #include <string>
 
 using std::string;
-using namespace glm;
+using std::vector;
+// using namespace glm;
 using namespace torch::indexing;
 // namespace F = torch::nn::functional;
 
@@ -40,6 +41,29 @@ bool load_module_to_gpu(torch::jit::script::Module &model, string path) {
   return true;
 }
 
+/**
+ * inputs is a list of tensors jit::IValue, on the same device
+ * as the model are. Output will also be on the same device the model is.
+ */
+bool query_model(
+    torch::jit::script::Module model, 
+    vector<torch::jit::IValue> inputs, 
+    torch::Tensor &output
+) {
+
+    try {
+        // Execute the model; model.forward returns an IValue 
+        // which we convert back to a Tensor
+        output = model.forward(inputs).toTensor();
+    }
+    catch ( c10::Error& e) {
+        return false;
+    }
+
+    return true;
+
+}
+
 /** Mimick np.meshgrid(..., indexing="xy") in libtorch. torch.meshgrid only allows "ij" indexing.
     (If you're unsure what this means, safely skip trying to understand this, and run a tiny example!)
 
@@ -47,12 +71,12 @@ bool load_module_to_gpu(torch::jit::script::Module &model, string path) {
       tensor1 (torch::Tensor): Tensor whose elements define the first dimension of the returned meshgrid.
       tensor2 (torch::Tensor): Tensor whose elements define the second dimension of the returned meshgrid.
 */
-std::vector<torch::Tensor> meshgrid_xy(
+vector<torch::Tensor> meshgrid_xy(
     torch::Tensor tensor1, torch::Tensor tensor2
 ) {
     
     // TODO: test
-    std::vector<torch::Tensor> tensors = {tensor1, tensor2};
+    vector<torch::Tensor> tensors = {tensor1, tensor2};
     auto meshgrid = torch::meshgrid(torch::TensorList(tensors));
     auto ii = meshgrid[0];
     auto jj = meshgrid[1];
@@ -110,7 +134,7 @@ torch::Tensor cumprod_exclusive(torch::Tensor tensor) {
       passing through the pixel at row index `j` and column index `i`.
       (TODO: double check if explanation of row and col indices convention is right).
 */
-std::vector<torch::Tensor> get_ray_bundle(
+vector<torch::Tensor> get_ray_bundle(
     int height, int width, float focal_length, 
     torch::Tensor tform_cam2world
 ) {
@@ -148,7 +172,7 @@ std::vector<torch::Tensor> get_ray_bundle(
     depth_values (torch.Tensor): Sampled depth values along each ray
       (shape: :math:`(num_samples)`).
 */
-std::vector<torch::Tensor> compute_query_points_from_rays(
+vector<torch::Tensor> compute_query_points_from_rays(
     torch::Tensor ray_origins,
     torch::Tensor ray_directions,
     float near_thresh,
@@ -197,7 +221,7 @@ std::vector<torch::Tensor> compute_query_points_from_rays(
     acc_map (torch.Tensor): # TODO: Double-check (I think this is the accumulated
       transmittance map).
 */
-std::vector<torch::Tensor> render_volume_density(
+vector<torch::Tensor> render_volume_density(
     torch::Tensor radiance_field,
     torch::Tensor ray_origins,
     torch::Tensor depth_values
@@ -245,7 +269,7 @@ torch::Tensor positional_encoding(torch::Tensor tensor, int num_encoding_functio
 
     // TODO: test
 
-    std::vector<torch::Tensor> encoding;
+    vector<torch::Tensor> encoding;
 
     //Trivially, the input tensor is added to the positional encoding.
     if (include_input)
@@ -271,8 +295,9 @@ torch::Tensor positional_encoding(torch::Tensor tensor, int num_encoding_functio
     }
 
     // Iterate over each frequency band
-    float* freq_ptr = (float*) frequency_bands.data_ptr(); 
-    for (int freq = 0; freq < frequency_bands.sizes()[0]; ++freq) {
+    auto frequency_bands_c = frequency_bands.contiguous();
+    float* freq_ptr = (float*) frequency_bands_c.data_ptr(); 
+    for (int freq = 0; freq < frequency_bands_c.sizes()[0]; ++freq) {
         encoding.push_back(torch::sin(tensor * *freq_ptr++));
         encoding.push_back(torch::cos(tensor * *freq_ptr++));
     }
@@ -291,9 +316,9 @@ torch::Tensor positional_encoding(torch::Tensor tensor, int num_encoding_functio
   Each element of the list (except possibly the last) has dimension `0` of length
   `chunksize`.
 */
-std::vector<torch::jit::IValue> get_minibatches(torch::Tensor inputs, int chunksize=1024*8) {
+vector<torch::Tensor> get_minibatches(torch::Tensor inputs, int chunksize=1024*8) {
     
-    std::vector<torch::jit::IValue> minibatches;
+    vector<torch::Tensor> minibatches;
 
     // TODO: test 
     for (int i = 0; i < inputs.sizes()[0]; i+=chunksize) {
@@ -317,7 +342,7 @@ torch::Tensor render(const torch::jit::script::Module model, const int height, c
 
     // TODO: test
 
-    std::vector<torch::Tensor> res;
+    vector<torch::Tensor> res;
 
     // Get the "bundle" of rays through all image pixels.
     res = get_ray_bundle(height, width, focal_length, tform_cam2world);
@@ -341,11 +366,15 @@ torch::Tensor render(const torch::jit::script::Module model, const int height, c
     //  concatenate the results (to avoid out-of-memory issues).
     auto batches = get_minibatches(encoded_points, chunksize);
 
-    std::vector<torch::Tensor> predictions;
+    vector<torch::Tensor> predictions;
     for(auto &batch: batches) {
-        // model.forward returns an IValue which we convert back to a Tensor
-        auto output = model.forward(batch).toTensor();
+
+        // TODO: convert batch as vector<torch::jit::IValue>
+
+        torch::Tensor output; 
+        // query_model(model, batch, output); // TODO: error propagation
         predictions.push_back(output);
+
     }
     auto radiance_field_flattened = at::cat(predictions, 0); // dim=0
 
@@ -431,7 +460,7 @@ int main(int argc,  char* argv[]) {
            num_encoding_functions, chunksize);
     /*
     // Create a vector of inputs.
-    std::vector<torch::jit::IValue> inputs;
+    vector<torch::jit::IValue> inputs;
     inputs.push_back(torch::ones({1, 90}).to(torch::kCUDA));
     std::cout << "Created input tensor and moved to GPU!\n";
 
