@@ -28,10 +28,12 @@ using std::string;
 using std::vector;
 using namespace glm;
 using namespace torch::indexing;
-// namespace F = torch::nn::functional;
 
 #define DEBUG 0
 
+/**
+ * TODO: docs
+ */
 bool load_module_to_gpu(torch::jit::script::Module &model, string path) {
 
   try {
@@ -56,12 +58,12 @@ bool query_model(
     torch::Tensor &output
 ) {
 
-   if (DEBUG)  std::cout<< "[DEBUG] input_batch.sizes() = " << input_batch.sizes() << "\n";
+    if (DEBUG) std::cout<< "[DEBUG] input_batch.sizes() = " << input_batch.sizes() << "\n";
     try {
         // Execute the model; model.forward returns an IValue 
         // which we convert back to a Tensor
         output = model.forward({input_batch}).toTensor();
-       if (DEBUG)  std::cout<< "[DEBUG] output.sizes() = " << output.sizes() << "\n";
+        if (DEBUG) std::cout<< "[DEBUG] output.sizes() = " << output.sizes() << "\n";
     }
     catch ( c10::Error& e) {
         return false;
@@ -142,11 +144,12 @@ torch::Tensor cumprod_exclusive(torch::Tensor tensor) {
       (TODO: double check if explanation of row and col indices convention is right).
 */
 vector<torch::Tensor> get_ray_bundle(
-    int height, int width, float focal_length, 
+    int height, int width, 
+    float focal_length, 
     torch::Tensor tensor_camToWorld
 ) {
 
-   if (DEBUG)  std::cout<< "[DEBUG] tensor_camToWorld.sizes() = " << tensor_camToWorld.sizes() << "\n Data:" << tensor_camToWorld << "\n";
+    if (DEBUG) std::cout<< "[DEBUG] tensor_camToWorld.sizes() = " << tensor_camToWorld.sizes() << "\n Data:" << tensor_camToWorld << "\n";
 
     auto res = meshgrid_xy(
       torch::arange(width).to(tensor_camToWorld),
@@ -160,21 +163,19 @@ vector<torch::Tensor> get_ray_bundle(
       -(jj - height * .5) / focal_length,
       -torch::ones_like(ii)}, 
       -1); // dim=-1
+    if (DEBUG) std::cout<< "[DEBUG] directions.sizes() = " << directions.sizes() << "\n"; // Data:" << directions << "\n";
 
-   if (DEBUG)  std::cout<< "[DEBUG] directions.sizes() = " << directions.sizes() << "\n"; // Data:" << directions << "\n";
-
-    // ray_directions = torch.sum(directions[..., None, :] * tensor_camToWorld[:3, :3], dim=-1)
+    // [python] ray_directions = torch.sum(directions[..., None, :] * tensor_camToWorld[:3, :3], dim=-1)
     auto index_directions = directions.index({"...", None, Slice()});
     auto camera_rotation = tensor_camToWorld.index({Slice(None, 3), Slice(None, 3)});
-
-   if (DEBUG)  std::cout<< "[DEBUG] indexed_directions.sizes() = " << index_directions.sizes() << "\n";
+    if (DEBUG) std::cout<< "[DEBUG] indexed_directions.sizes() = " << index_directions.sizes() << "\n";
 
     torch::Tensor ray_directions = torch::sum(index_directions * camera_rotation, -1); // dim=-1
-   if (DEBUG)  std::cout<< "[DEBUG] ray_directions.sizes() = " << ray_directions.sizes() << "\n"; //  Data:" << ray_origins << "\n";
+    if (DEBUG) std::cout<< "[DEBUG] ray_directions.sizes() = " << ray_directions.sizes() << "\n"; //  Data:" << ray_origins << "\n";
 
-    // ray_origins = tensor_camToWorld[:3, -1].expand(ray_directions.shape)
+    // [python] ray_origins = tensor_camToWorld[:3, -1].expand(ray_directions.shape)
     torch::Tensor ray_origins = tensor_camToWorld.index({Slice(None, 3), -1}).expand(ray_directions.sizes());
-   if (DEBUG)  std::cout<< "[DEBUG] ray_origins.sizes() = " << ray_origins.sizes() << "\n"; //  Data:" << ray_origins << "\n";
+    if (DEBUG) std::cout<< "[DEBUG] ray_origins.sizes() = " << ray_origins.sizes() << "\n"; //  Data:" << ray_origins << "\n";
 
     return {ray_origins, ray_directions};
 
@@ -210,35 +211,33 @@ vector<torch::Tensor> compute_query_points_from_rays(
     torch::Tensor ray_directions,
     float near_thresh,
     float far_thresh,
-    int num_samples
-    // TODO: bool randomize=true
+    int num_samples,
+    bool randomize=true
 ) {
 
     // TODO: test
 
     // shape: (num_samples)
     torch::Tensor depth_values = torch::linspace(near_thresh, far_thresh, num_samples).to(ray_origins);
-   if (DEBUG)  std::cout<< "[DEBUG] depth_values.sizes() = " << depth_values.sizes() << "\n"; //  Data:" << depth_values << "\n";
+    if (DEBUG) std::cout<< "[DEBUG] depth_values.sizes() = " << depth_values.sizes() << "\n"; //  Data:" << depth_values << "\n";
 
     // TODO: do randomize
-    /*
     if (randomize) {
+
         // ray_origins: (width, height, 3)
         // noise_shape = (width, height, num_samples)
-        // noise_shape = list(ray_origins.shape[:-1]) + [num_samples]
-        auto noise_shape = (ray_origins.sizes()[0], ray_origins.sizes()[1], num_samples);
+        // [python] noise_shape = list(ray_origins.shape[:-1]) + [num_samples]
+        auto noise_shape = torch::zeros({ray_origins.sizes()[0], ray_origins.sizes()[1], num_samples}).sizes();
         // depth_values: (num_samples)
-        auto depth_values = depth_values \
-            + torch::rand(noise_shape).to(ray_origins) * (far_thresh
-                - near_thresh) / num_samples;
+        depth_values = depth_values + torch::rand(noise_shape).to(ray_origins) * (far_thresh - near_thresh) / num_samples;
+    
     } 
-    */
 
     // (width, height, num_samples, 3) = (width, height, 1, 3) + (width, height, 1, 3) * (num_samples, 1)
     // query_points:  (width, height, num_samples, 3)
-    // query_points = ray_origins[..., None, :] + ray_directions[..., None, :] * depth_values[..., :, None]
+    // [python] query_points = ray_origins[..., None, :] + ray_directions[..., None, :] * depth_values[..., :, None]
     torch::Tensor query_points = ray_origins.index({"...", None, Slice()}) + ray_directions.index({"...", None, Slice()}) * depth_values.index({"...", Slice(), None});
-   if (DEBUG)  std::cout<< "[DEBUG] query_points.sizes() = " << query_points.sizes() << "\n";
+    if (DEBUG) std::cout<< "[DEBUG] query_points.sizes() = " << query_points.sizes() << "\n";
 
     // TODO: Double-check that `depth_values` returned is of shape `(num_samples)`.
 
@@ -276,36 +275,36 @@ vector<torch::Tensor> render_volume_density(
 
     // auto sigma_a = F::relu(radiance_field.index({"...", 3}));
     auto sigma_a = torch::relu(radiance_field.index({"...", 3}));
-   if (DEBUG)  std::cout<< "[DEBUG] sigma_a.sizes() = " << sigma_a.sizes() << "\n";
-    // rgb = torch.sigmoid(radiance_field[..., :3])
+    if (DEBUG) std::cout<< "[DEBUG] sigma_a.sizes() = " << sigma_a.sizes() << "\n";
+    // [python] rgb = torch.sigmoid(radiance_field[..., :3])
     auto rgb = torch::sigmoid(radiance_field.index({"...", Slice(None, 3)}));
-   if (DEBUG)  std::cout<< "[DEBUG] rgb.sizes() = " << rgb.sizes() << "\n";
-    // one_e_10 = torch.tensor([1e10], dtype=ray_origins.dtype, device=ray_origins.device)
+    if (DEBUG) std::cout<< "[DEBUG] rgb.sizes() = " << rgb.sizes() << "\n";
+    // [python] one_e_10 = torch.tensor([1e10], dtype=ray_origins.dtype, device=ray_origins.device)
     auto one_e_10 = torch::tensor({1e10}, 
         torch::TensorOptions().dtype(ray_origins.dtype()).device(ray_origins.device())
     );
-   if (DEBUG)  std::cout<< "[DEBUG] one_e_10.sizes() = " << one_e_10.sizes() << "\n";
-    //dists = torch.cat((depth_values[..., 1:] - depth_values[..., :-1],
+    if (DEBUG) std::cout<< "[DEBUG] one_e_10.sizes() = " << one_e_10.sizes() << "\n";
+    // [python] dists = torch.cat((depth_values[..., 1:] - depth_values[..., :-1],
     //              one_e_10.expand(depth_values[..., :1].shape)), dim=-1)
     auto dists = at::cat((depth_values.index({"...", Slice(1, None)}) - depth_values.index({"...", Slice(None, -1)}),
                   one_e_10.expand(depth_values.index({"...", Slice(None, 1)}).sizes())), -1); // dim=-1
-   if (DEBUG)  std::cout<< "[DEBUG] dists.sizes() = " << dists.sizes() << "\n";
-    // alpha = 1. - torch.exp(-sigma_a * dists)
+    if (DEBUG) std::cout<< "[DEBUG] dists.sizes() = " << dists.sizes() << "\n";
+    // [python] alpha = 1. - torch.exp(-sigma_a * dists)
     auto alpha = 1. - torch::exp(-sigma_a * dists);
-   if (DEBUG)  std::cout<< "[DEBUG] alpha.sizes() = " << alpha.sizes() << "\n";
-    // weights = alpha * cumprod_exclusive(1. - alpha + 1e-10)
+    if (DEBUG) std::cout<< "[DEBUG] alpha.sizes() = " << alpha.sizes() << "\n";
+    // [python] weights = alpha * cumprod_exclusive(1. - alpha + 1e-10)
     auto weights = alpha * cumprod_exclusive(1. - alpha + 1e-10);
-   if (DEBUG)  std::cout<< "[DEBUG] weights.sizes() = " << weights.sizes() << "\n";
+    if (DEBUG) std::cout<< "[DEBUG] weights.sizes() = " << weights.sizes() << "\n";
 
-    // rgb_map = (weights[..., None] * rgb).sum(dim=-2)
+    // [python] rgb_map = (weights[..., None] * rgb).sum(dim=-2)
     auto rgb_map = (weights.index({"...", None}) * rgb).sum(-2); // dim=-2
-   if (DEBUG)  std::cout<< "[DEBUG] rgb_map.sizes() = " << rgb_map.sizes() << "\n";
-    // depth_map = (weights * depth_values).sum(dim=-1)
+    if (DEBUG) std::cout<< "[DEBUG] rgb_map.sizes() = " << rgb_map.sizes() << "\n";
+    // [python] depth_map = (weights * depth_values).sum(dim=-1)
     auto depth_map = (weights * depth_values).sum(-1); // dim=-1
-   if (DEBUG)  std::cout<< "[DEBUG] depth_map.sizes() = " << depth_map.sizes() << "\n";
-    // acc_map = weights.sum(-1)
+    if (DEBUG) std::cout<< "[DEBUG] depth_map.sizes() = " << depth_map.sizes() << "\n";
+    // [python] acc_map = weights.sum(-1)
     auto acc_map = weights.sum(-1);
-   if (DEBUG)  std::cout<< "[DEBUG] acc_map.sizes() = " << acc_map.sizes() << "\n";
+    if (DEBUG) std::cout<< "[DEBUG] acc_map.sizes() = " << acc_map.sizes() << "\n";
 
     return {rgb_map, depth_map, acc_map};
 
@@ -347,7 +346,6 @@ torch::Tensor positional_encoding(torch::Tensor tensor, int num_encoding_functio
               num_encoding_functions - 1,
               num_encoding_functions,
               torch::TensorOptions().dtype(tensor.dtype())
-              // torch::TensorOptions().dtype(tensor.dtype()).device(tensor.device())
         ));
     } else {
         frequency_bands = torch::linspace(
@@ -355,26 +353,20 @@ torch::Tensor positional_encoding(torch::Tensor tensor, int num_encoding_functio
           pow(2.0, (num_encoding_functions - 1)),
           num_encoding_functions,
           torch::TensorOptions().dtype(tensor.dtype())
-          // torch::TensorOptions().dtype(tensor.dtype()).device(tensor.device())
         );
     }
     frequency_bands = frequency_bands.contiguous();
-   if (DEBUG)  std::cout<< "[DEBUG] frequency_bands.sizes() = " << frequency_bands.sizes() << "\n"; //  Data:" << frequency_bands << "\n";
+    if (DEBUG) std::cout<< "[DEBUG] frequency_bands.sizes() = " << frequency_bands.sizes() << "\n"; //  Data:" << frequency_bands << "\n";
 
     // Iterate over each frequency band
     std::vector<float> frequency_bands_vector(frequency_bands.data_ptr<float>(), frequency_bands.data_ptr<float>()+frequency_bands.numel());
-    /*
-    float* freq_ptr = (float*) frequency_bands.data_ptr(); 
-    for (int freq = 0; freq < frequency_bands.sizes()[0]; ++freq) {
-        encoding.push_back(torch::sin(tensor * *freq_ptr));
-        encoding.push_back(torch::cos(tensor * *freq_ptr));
-        freq_ptr++;
-    }*/
+
     for(const auto& frequency_band: frequency_bands_vector) {
         encoding.push_back(torch::sin(tensor * frequency_band));
         encoding.push_back(torch::cos(tensor * frequency_band));
     }
-   if (DEBUG)  std::cout<< "[DEBUG] encoding.size() = " << encoding.size() << "\n";
+
+    if (DEBUG) std::cout<< "[DEBUG] encoding.size() = " << encoding.size() << "\n";
 
     // Special case, for no positional encoding
     if (encoding.size() == 1) 
@@ -392,6 +384,8 @@ torch::Tensor positional_encoding(torch::Tensor tensor, int num_encoding_functio
 */
 vector<torch::Tensor> get_minibatches(torch::Tensor inputs, int chunksize=1024*8) {
     
+    // [python] return [inputs[i:i + chunksize] for i in range(0, inputs.shape[0], chunksize)]
+
     vector<torch::Tensor> minibatches;
 
     for (int i = 0; i < inputs.sizes()[0]; i+=chunksize) {
@@ -427,9 +421,9 @@ torch::Tensor render(const torch::jit::script::Module model, const int height, c
         ray_origins, ray_directions, near_thresh, far_thresh, depth_samples_per_ray
     );
     auto query_points = res[0];
-   if (DEBUG)  std::cout<< "[DEBUG] query_points.sizes() = " << query_points.sizes() << "\n";
+    if (DEBUG) std::cout<< "[DEBUG] query_points.sizes() = " << query_points.sizes() << "\n";
     auto depth_values = res[1]; 
-   if (DEBUG)  std::cout<< "[DEBUG] depth_values.sizes() = " << depth_values.sizes() << "\n";
+    if (DEBUG) std::cout<< "[DEBUG] depth_values.sizes() = " << depth_values.sizes() << "\n";
 
     // "Flatten" the query points.
     auto flattened_query_points = query_points.reshape({-1, 3});
@@ -453,18 +447,20 @@ torch::Tensor render(const torch::jit::script::Module model, const int height, c
         }
 
     }
-   if (DEBUG)  std::cout<< "[DEBUG] predictions.size() = " << predictions.size() << "\n";
+    if (DEBUG) std::cout<< "[DEBUG] predictions.size() = " << predictions.size() << "\n";
 
     auto radiance_field_flattened = at::cat(predictions, 0); // dim=0
-   if (DEBUG)  std::cout<< "[DEBUG] radiance_field_flattened.sizes() = " << radiance_field_flattened.sizes() << "\n";
+    if (DEBUG) std::cout<< "[DEBUG] radiance_field_flattened.sizes() = " << radiance_field_flattened.sizes() << "\n";
 
     // "Unflatten" to obtain the radiance field.
-   if (DEBUG)  std::cout<< "[DEBUG] query_points.sizes() = " << query_points.sizes() << "\n";
+    if (DEBUG) std::cout<< "[DEBUG] query_points.sizes() = " << query_points.sizes() << "\n";
+    
     // TODO: improve
     auto unflattened_shape = torch::zeros({query_points.sizes()[0], query_points.sizes()[1],  query_points.sizes()[2], 4}).sizes();
-    //if (DEBUG)  std::cout<< "[DEBUG] unflattened_shape = " << unflattened_shape << "\n";
+    // if (DEBUG) std::cout<< "[DEBUG] unflattened_shape = " << unflattened_shape << "\n";
+    
     auto radiance_field = torch::reshape(radiance_field_flattened, unflattened_shape);
-   if (DEBUG)  std::cout<< "[DEBUG] radiance_field.sizes() = " << radiance_field.sizes() << "\n";
+    if (DEBUG) std::cout<< "[DEBUG] radiance_field.sizes() = " << radiance_field.sizes() << "\n";
 
     // Perform differentiable volume rendering to re-synthesize the RGB image.
     res = render_volume_density(radiance_field, ray_origins, depth_values);
@@ -474,6 +470,10 @@ torch::Tensor render(const torch::jit::script::Module model, const int height, c
 
 }
 
+
+/**
+ * TODO: doc
+*/
 torch::Tensor lookAt(vec3 from, vec3 to) {
             
     vec3 forward = normalize(from - to);                     // z vector
@@ -487,24 +487,19 @@ torch::Tensor lookAt(vec3 from, vec3 to) {
         forward     // third column
     );
 
-    // camera frame in world space
+    // camera frame in world space [mat4]
     mat4 camToWorld = mat4(0.0); 
 
-    camToWorld[0][0] = rotation[0][0]; 
-    camToWorld[0][1] = rotation[0][1];
-    camToWorld[0][2] = rotation[0][2];
-    camToWorld[1][0] = rotation[1][0];
-    camToWorld[1][1] = rotation[1][1];
-    camToWorld[1][2] = rotation[1][2];
-    camToWorld[2][0] = rotation[2][0];
-    camToWorld[2][1] = rotation[2][1];
-    camToWorld[2][2] = rotation[2][2];
+    for (int i = 0; i < 3; i++) 
+      for (int j = 0; j < 3; j++)
+        camToWorld[i][j] = rotation[i][j];
 
     camToWorld[3][0] = position.x; 
     camToWorld[3][1] = position.y; 
     camToWorld[3][2] = position.z; 
     camToWorld[3][3] = 1.0; 
 
+    // camera frame in world space [mat4 -> torch::Tensor]
     auto tensor_camToWorld = torch::zeros({4, 4});
     for (int i = 0; i < 4; i++)
         for (int j = 0; j < 4; j++)
@@ -512,8 +507,41 @@ torch::Tensor lookAt(vec3 from, vec3 to) {
 
     return tensor_camToWorld;
 
-}   
+} 
 
+
+/**
+ * TODO: doc
+*/
+void tensorImShow(string windowName, torch::Tensor tensor_image) {
+
+    // Thanks to: https://stackoverflow.com/questions/59512310/convert-pytorch-tensor-to-opencv-mat-and-vice-versa-in-c
+    tensor_image = tensor_image.detach();
+    // float to 255 range
+    tensor_image = tensor_image.mul(255).clamp(0, 255).to(torch::kU8);
+    // GPU to CPU?, may not needed
+    tensor_image = tensor_image.to(torch::kCPU);
+    // shape of tensor
+    int64_t height = tensor_image.size(0);
+    int64_t width = tensor_image.size(1);
+
+    // Mat takes data form like {0,0,255,0,0,255,...} ({B,G,R,B,G,R,...})
+    // so we must reshape tensor, otherwise we get a 3x3 grid
+    tensor_image = tensor_image.reshape({width * height * 3});
+    // CV_8UC3 is an 8-bit unsigned integer matrix/image with 3 channels
+    cv::Mat cv_image(cv::Size(width, height), CV_8UC3, tensor_image.data_ptr());
+
+    cv::namedWindow(windowName); // Create a window
+    cv::cvtColor(cv_image, cv_image, cv::COLOR_BGR2RGB);
+
+    cv::imshow(windowName, cv_image); // Show our image inside the created window.
+
+}
+
+
+/**
+ * TODO: doc
+*/
 int main(int argc,  char* argv[]) {
   
     /* TODO: remove comment
@@ -560,7 +588,8 @@ int main(int argc,  char* argv[]) {
 
     // Focal lenght
     float focal_length = 200;
-
+    
+    // Number of depth samples along each ray
     int depth_samples_per_ray = 32;
     
     // Number of functions used in the positional encoding (Be sure to update the 
@@ -588,26 +617,8 @@ int main(int argc,  char* argv[]) {
               near_thresh, far_thresh, depth_samples_per_ray,
               num_encoding_functions, chunksize);
 
-        // Thanks to: https://stackoverflow.com/questions/59512310/convert-pytorch-tensor-to-opencv-mat-and-vice-versa-in-c
-        tensor_image = tensor_image.detach();
-        // float to 255 range
-        tensor_image = tensor_image.mul(255).clamp(0, 255).to(torch::kU8);
-        // GPU to CPU?, may not needed
-        tensor_image = tensor_image.to(torch::kCPU);
-        // shape of tensor
-        int64_t height = tensor_image.size(0);
-        int64_t width = tensor_image.size(1);
-        
-        // Mat takes data form like {0,0,255,0,0,255,...} ({B,G,R,B,G,R,...})
-        // so we must reshape tensor, otherwise we get a 3x3 grid
-        tensor_image = tensor_image.reshape({width * height * 3});
-        // CV_8UC3 is an 8-bit unsigned integer matrix/image with 3 channels
-        cv::Mat cv_image(cv::Size(width, height), CV_8UC3, tensor_image.data_ptr());
+        tensorImShow(windowName, tensor_image);
 
-        cv::namedWindow(windowName); // Create a window
-        cv::cvtColor(cv_image, cv_image, cv::COLOR_BGR2RGB);
-
-        cv::imshow(windowName, cv_image); // Show our image inside the created window.
         cv::waitKey(1); // Wait for any keystroke in the window
 
         stop = clock();
