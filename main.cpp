@@ -271,27 +271,28 @@ vector<torch::Tensor> render_volume_density(
     torch::Tensor depth_values
 ) {
 
-    // TODO: test
-
-    // auto sigma_a = F::relu(radiance_field.index({"...", 3}));
+    // [python] auto sigma_a = F::relu(radiance_field.index({"...", 3}));
     auto sigma_a = torch::relu(radiance_field.index({"...", 3}));
     if (DEBUG) std::cout<< "[DEBUG] sigma_a.sizes() = " << sigma_a.sizes() << "\n";
+    
     // [python] rgb = torch.sigmoid(radiance_field[..., :3])
     auto rgb = torch::sigmoid(radiance_field.index({"...", Slice(None, 3)}));
     if (DEBUG) std::cout<< "[DEBUG] rgb.sizes() = " << rgb.sizes() << "\n";
+    
     // [python] one_e_10 = torch.tensor([1e10], dtype=ray_origins.dtype, device=ray_origins.device)
-    auto one_e_10 = torch::tensor({1e10}, 
-        torch::TensorOptions().dtype(ray_origins.dtype()).device(ray_origins.device())
-    );
+    auto one_e_10 = torch::tensor({1e10}, torch::TensorOptions().dtype(ray_origins.dtype()).device(ray_origins.device()));
     if (DEBUG) std::cout<< "[DEBUG] one_e_10.sizes() = " << one_e_10.sizes() << "\n";
+    
     // [python] dists = torch.cat((depth_values[..., 1:] - depth_values[..., :-1],
     //              one_e_10.expand(depth_values[..., :1].shape)), dim=-1)
     auto dists = at::cat((depth_values.index({"...", Slice(1, None)}) - depth_values.index({"...", Slice(None, -1)}),
                   one_e_10.expand(depth_values.index({"...", Slice(None, 1)}).sizes())), -1); // dim=-1
     if (DEBUG) std::cout<< "[DEBUG] dists.sizes() = " << dists.sizes() << "\n";
+    
     // [python] alpha = 1. - torch.exp(-sigma_a * dists)
     auto alpha = 1. - torch::exp(-sigma_a * dists);
     if (DEBUG) std::cout<< "[DEBUG] alpha.sizes() = " << alpha.sizes() << "\n";
+    
     // [python] weights = alpha * cumprod_exclusive(1. - alpha + 1e-10)
     auto weights = alpha * cumprod_exclusive(1. - alpha + 1e-10);
     if (DEBUG) std::cout<< "[DEBUG] weights.sizes() = " << weights.sizes() << "\n";
@@ -299,10 +300,12 @@ vector<torch::Tensor> render_volume_density(
     // [python] rgb_map = (weights[..., None] * rgb).sum(dim=-2)
     auto rgb_map = (weights.index({"...", None}) * rgb).sum(-2); // dim=-2
     if (DEBUG) std::cout<< "[DEBUG] rgb_map.sizes() = " << rgb_map.sizes() << "\n";
+    
     // [python] depth_map = (weights * depth_values).sum(dim=-1)
     auto depth_map = (weights * depth_values).sum(-1); // dim=-1
     if (DEBUG) std::cout<< "[DEBUG] depth_map.sizes() = " << depth_map.sizes() << "\n";
-    // [python] acc_map = weights.sum(-1)
+    
+    // [python] acc_map = weights.sum(dim=-1)
     auto acc_map = weights.sum(-1);
     if (DEBUG) std::cout<< "[DEBUG] acc_map.sizes() = " << acc_map.sizes() << "\n";
 
@@ -452,12 +455,9 @@ torch::Tensor render(const torch::jit::script::Module model, const int height, c
     auto radiance_field_flattened = at::cat(predictions, 0); // dim=0
     if (DEBUG) std::cout<< "[DEBUG] radiance_field_flattened.sizes() = " << radiance_field_flattened.sizes() << "\n";
 
-    // "Unflatten" to obtain the radiance field.
-    if (DEBUG) std::cout<< "[DEBUG] query_points.sizes() = " << query_points.sizes() << "\n";
-    
-    // TODO: improve
-    auto unflattened_shape = torch::zeros({query_points.sizes()[0], query_points.sizes()[1],  query_points.sizes()[2], 4}).sizes();
-    // if (DEBUG) std::cout<< "[DEBUG] unflattened_shape = " << unflattened_shape << "\n";
+    // "Unflatten" to obtain the radiance field.  
+    auto unflattened_shape = torch::zeros({query_points.sizes()[0], query_points.sizes()[1],  query_points.sizes()[2], 4}).sizes(); // TODO: improve
+    if (DEBUG) std::cout<< "[DEBUG] unflattened_shape = " << unflattened_shape << "\n";
     
     auto radiance_field = torch::reshape(radiance_field_flattened, unflattened_shape);
     if (DEBUG) std::cout<< "[DEBUG] radiance_field.sizes() = " << radiance_field.sizes() << "\n";
