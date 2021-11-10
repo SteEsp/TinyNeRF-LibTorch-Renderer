@@ -4,6 +4,7 @@
 // Run with: .\build\RelWithDebInfo\renderer.exe traced_models/traced_tiny_nerf.pt
 
 #include <torch/script.h> // One-stop header.
+#include <c10/cuda/CUDACachingAllocator.h>
 
 #include <glm/vec3.hpp> // vec3
 #include <glm/vec4.hpp> // vec4
@@ -410,22 +411,18 @@ torch::Tensor render(const torch::jit::script::Module model, const int height, c
             const int num_encoding_functions, const int chunksize
             ) {
 
-    // TODO: test
-
-    vector<torch::Tensor> res;
-
     // Get the "bundle" of rays through all image pixels.
-    res = get_ray_bundle(height, width, focal_length, tensor_camToWorld);
-    auto ray_origins = res[0];
-    auto ray_directions = res[1];
+    auto ray_bundle = get_ray_bundle(height, width, focal_length, tensor_camToWorld);
+    auto ray_origins = ray_bundle[0];
+    auto ray_directions = ray_bundle[1];
     
     // Sample query points along each ray
-    res = compute_query_points_from_rays(
+    auto query_points_and_depths = compute_query_points_from_rays(
         ray_origins, ray_directions, near_thresh, far_thresh, depth_samples_per_ray
     );
-    auto query_points = res[0];
+    auto query_points = query_points_and_depths[0];
     if (DEBUG) std::cout<< "[DEBUG] query_points.sizes() = " << query_points.sizes() << "\n";
-    auto depth_values = res[1]; 
+    auto depth_values = query_points_and_depths[1]; 
     if (DEBUG) std::cout<< "[DEBUG] depth_values.sizes() = " << depth_values.sizes() << "\n";
 
     // "Flatten" the query points.
@@ -463,8 +460,8 @@ torch::Tensor render(const torch::jit::script::Module model, const int height, c
     if (DEBUG) std::cout<< "[DEBUG] radiance_field.sizes() = " << radiance_field.sizes() << "\n";
 
     // Perform differentiable volume rendering to re-synthesize the RGB image.
-    res = render_volume_density(radiance_field, ray_origins, depth_values);
-    auto rgb_predicted = res[0];
+    auto renders = render_volume_density(radiance_field, ray_origins, depth_values);
+    auto rgb_predicted = renders[0];
 
     return rgb_predicted;
 
@@ -543,38 +540,30 @@ void tensorImShow(string windowName, torch::Tensor tensor_image) {
  * TODO: doc
 */
 int main(int argc,  char* argv[]) {
-  
-    /* TODO: remove comment
+
+    // renderer.exe "..\\..\\traced_models\\traced_tiny_nerf.pt"
     if (argc != 2) {
         std::cout << "usage: renderer <path-to-traced-model>\n";
         return -1;
     }
-    */
-
+   
     torch::jit::script::Module model;
 
-    string path = "C:\\Users\\StefanoEsposito\\Desktop\\GitHub\\libtorch_NeRF_renderer\\traced_models\\traced_tiny_nerf.pt";
+    auto path = string(argv[1]);
 
-    // load_module_to_gpu(model, string(argv[1]));
     load_module_to_gpu(model, path);
 
     // Set to `eval` model (just like Python)
-    model.eval();     
+    model.eval();  
+
     // Within this scope/thread, don't use gradients (again, like in Python)     
     torch::NoGradGuard no_grad_;
     
-   /*
-    auto tensor_camToWorld = torch::tensor({
-        { 6.8935e-01,  5.3373e-01, -4.8982e-01, -2.0},
-        {-7.2443e-01,  5.0789e-01, -4.6611e-01, -2.0},
-        { 1.4901e-08,  6.7615e-01,  7.3676e-01,  3.0},
-        { 0.0,  0.0,  0.0,  1.0}}).to(torch::kCUDA);
-    */ 
     vec3 lookfrom(2,2,3);
     vec3 lookat(0,0,0);
 
     auto tensor_camToWorld = lookAt(lookfrom, lookat).to(torch::kCUDA);
-    // std::cout << "tensor_camToWorld = " << tensor_camToWorld << "\n";
+    if (DEBUG) std::cout << "tensor_camToWorld = " << tensor_camToWorld << "\n";
 
     /* Parameters */
 
@@ -601,31 +590,30 @@ int main(int argc,  char* argv[]) {
     // only after all rays from the current "bundle" are queried and rendered).
     int chunksize = 16384; // Use chunksize of about 4096 to fit in ~1.4 GB of GPU memory.
 
-    // torch::jit::IValue ivalue;
-    // torch::Tensor tensor;
-    // ivalue = tensor;
     string windowName = "Output Image"; //Name of the window
 
-    static int num_frames = 90;
+    static int num_frames = 1;
     clock_t start, stop;
     for (int frame = 0; frame < num_frames; frame++) {
+
+        c10::cuda::CUDACachingAllocator::emptyCache();
 
         start = clock();
         std::cout << "Frame [" << frame+1 << "/" << num_frames << "]";
 
         auto tensor_image = render(model, image_height, image_width, focal_length, tensor_camToWorld, 
-              near_thresh, far_thresh, depth_samples_per_ray,
-              num_encoding_functions, chunksize);
+                                  near_thresh, far_thresh, depth_samples_per_ray,
+                                  num_encoding_functions, chunksize);
 
         tensorImShow(windowName, tensor_image);
 
-        cv::waitKey(1); // Wait for any keystroke in the window
-
         stop = clock();
         float timer_seconds = ((float)(stop - start)) / CLOCKS_PER_SEC;
-        std::cout << " took " << timer_seconds << " seconds, " << 1 / timer_seconds << "FPS. \n";   
+        std::cout << " took " << timer_seconds << " seconds, " << 1 / timer_seconds << "FPS. \n";  
 
-        /* Update Scene  */  
+        cv::waitKey(1); // Wait for any keystroke in the window 
+
+        /* Update camera position */  
         lookfrom = vec3(rotationMatrix(vec3(0, 0, 1), deg2rad(360/num_frames)) * vec4(lookfrom, 1));
         tensor_camToWorld = lookAt(lookfrom, lookat).to(torch::kCUDA);
 
