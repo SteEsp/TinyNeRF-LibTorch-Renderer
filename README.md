@@ -1,4 +1,4 @@
-# TinyNeRF PyTorch C++ Renderer
+# TinyNeRF LibTorch Renderer
 
 The [NeRF code](https://github.com/bmild/nerf) release has an accompanying [Colab notebook](https://colab.research.google.com/github/bmild/nerf/blob/master/tiny_nerf.ipynb), that showcases training a feature-limited version of NeRF on a "tiny" scene.
 
@@ -9,7 +9,7 @@ Components not included in the notebook:
 - Hierarchical Sampling
 
 Dependencies:
-- [PyTorch C++](https://pytorch.org/cppdocs/installing.html)
+- [LibTorch](https://pytorch.org/cppdocs/installing.html)
 - [OpenCV](https://opencv.org/)
 - [glm](https://github.com/g-truc/glm)
 
